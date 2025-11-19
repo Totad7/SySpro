@@ -49,7 +49,7 @@ int main()
             break;
         case 5:
             cout << "\n=== GPU BENCHMARK TEST ===\n";
-            gpu_benchmark::run_gpu_test_menu();
+            gpu_benchmark_final::run_universal_gpu_test();
             break;
         case 6:
             cout << "Exiting... Goodbye!\n";
