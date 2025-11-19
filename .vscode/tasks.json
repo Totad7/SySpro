@@ -1,0 +1,32 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "C/C++: cl.exe build active file",
+            "command": "cl.exe",
+            "args": [
+                "/Zi",
+                "/EHsc",
+                "/Fe:",
+                "${workspaceFolder}/build/cpu_diagnostic.exe",
+                "${workspaceFolder}/src/main.cpp",
+                "${workspaceFolder}/src/cpu_benchmark.cpp",
+                "ole32.lib",
+                "oleaut32.lib",
+                "wbemuuid.lib"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$msCompile"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "Компиляция проекта диагностики CPU"
+        }
+    ]
+}

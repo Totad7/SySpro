@@ -1,0 +1,39 @@
+# Executable files
+*.exe
+diagnostic_z
+main.exe
+
+# Build artifacts
+*.o
+*.obj
+*.a
+*.lib
+
+# Dynamic libraries
+*.dll
+OpenCL.dll
+
+# Distribution folder
+distribute/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+
+# Log files
+*.log
+
+# Backup files
+*.bak
+*.backup
