@@ -1,267 +1,333 @@
 #pragma once
-#include <iostream>
-#include <vector>
-#include <chrono>
+/**
+ * ram_test.h - IMPROVED VERSION
+ * Better memory bandwidth test with optimizations
+ */
+
 #include <cstdint>
-#include <random>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
 #include <thread>
-#include <limits>
+#include <atomic>
+#include <random>
+#include <iostream>
+#include <chrono>
+#include <algorithm>
+#include <iomanip>
+#include <sstream>
 
-namespace ram_test
+#if defined(_MSC_VER)
+#include <malloc.h>
+#elif defined(__MINGW32__) || defined(__MINGW64__)
+#include <mm_malloc.h>
+#endif
+
+namespace ram_test_internal
 {
-    void force_memory_barrier()
+    // CONFIG: tweak these if needed
+    static constexpr size_t CONFIG_BUFFER_BYTES = 2ull * 1024 * 1024 * 1024; // 2 GiB to avoid cache effects
+    static constexpr size_t CONFIG_ALIGNMENT_BYTES = 64;
+    static constexpr bool CONFIG_VERBOSE = true;
+    static constexpr size_t CONFIG_WARMUP_ITERATIONS = 2;
+    static constexpr size_t CONFIG_TEST_ITERATIONS = 5;
+
+    using high_res_clock = std::chrono::high_resolution_clock;
+    using time_point_t = std::chrono::time_point<high_res_clock>;
+
+    inline void compiler_barrier()
     {
+#if defined(__GNUC__) || defined(__clang__)
         asm volatile("" ::: "memory");
+#else
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
     }
 
-    size_t get_available_memory_mb()
+    inline void *aligned_alloc_helper(size_t alignment, size_t size)
     {
-        // Примерная оценка доступной памяти (упрощенная)
-        // В реальном приложении лучше использовать системные API
-        return 4096; // 4 GB как безопасное значение по умолчанию
+#if defined(_MSC_VER)
+        return _aligned_malloc(size, alignment);
+#elif defined(__MINGW32__) || defined(__MINGW64__)
+        return _mm_malloc(size, alignment);
+#else
+        void *p = nullptr;
+        if (posix_memalign(&p, alignment, size) == 0)
+            return p;
+        return nullptr;
+#endif
     }
 
-    size_t get_user_input_size()
+    inline void aligned_free_helper(void *p)
     {
-        size_t available_mem = get_available_memory_mb();
-        size_t max_recommended = available_mem * 3 / 4; // 75% от доступной
+        if (!p)
+            return;
+#if defined(_MSC_VER)
+        _aligned_free(p);
+#elif defined(__MINGW32__) || defined(__MINGW64__)
+        _mm_free(p);
+#else
+        free(p);
+#endif
+    }
 
-        std::cout << "=== RAM PERFORMANCE TEST ===\n";
-        std::cout << "Available memory: ~" << available_mem << " MB\n";
-        std::cout << "Recommended max test size: " << max_recommended << " MB\n\n";
+    inline size_t bytes_to_elements(size_t bytes) { return bytes / sizeof(uint64_t); }
 
-        std::cout << "Choose test size:\n";
-        std::cout << "1. 512 MB (quick test)\n";
-        std::cout << "2. 1024 MB (standard test)\n";
-        std::cout << "3. 2048 MB (extended test)\n";
-        std::cout << "4. 4096 MB (comprehensive test)\n";
-        std::cout << "5. Custom size\n";
-        std::cout << "Enter your choice (1-5): ";
+    inline double seconds_between(const time_point_t &a, const time_point_t &b)
+    {
+        return std::chrono::duration<double>(b - a).count();
+    }
 
-        int choice;
-        std::cin >> choice;
-
-        if (std::cin.fail())
+    inline std::string format_bytes(double bytes)
+    {
+        static const char *S[] = {"B", "KB", "MB", "GB", "TB"};
+        int idx = 0;
+        while (bytes >= 1024.0 && idx < 4)
         {
-            std::cin.clear();
-            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-            std::cout << "Invalid input. Using standard 1024 MB test.\n";
-            return 1024;
+            bytes /= 1024.0;
+            ++idx;
         }
-
-        size_t size_mb;
-
-        switch (choice)
-        {
-        case 1:
-            size_mb = 512;
-            break;
-        case 2:
-            size_mb = 1024;
-            break;
-        case 3:
-            size_mb = 2048;
-            break;
-        case 4:
-            size_mb = 4096;
-            break;
-        case 5:
-            std::cout << "Enter custom test size in MB (" << max_recommended << " MB max recommended): ";
-            std::cin >> size_mb;
-
-            if (std::cin.fail())
-            {
-                std::cin.clear();
-                std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                std::cout << "Invalid input. Using standard 1024 MB test.\n";
-                size_mb = 1024;
-            }
-            else if (size_mb > max_recommended * 2)
-            {
-                std::cout << "Warning: Test size exceeds recommended maximum!\n";
-                std::cout << "Continue anyway? (y/n): ";
-                char confirm;
-                std::cin >> confirm;
-                if (confirm != 'y' && confirm != 'Y')
-                {
-                    std::cout << "Using recommended size: " << max_recommended << " MB\n";
-                    size_mb = max_recommended;
-                }
-            }
-            else if (size_mb < 64)
-            {
-                std::cout << "Size too small. Using minimum 64 MB.\n";
-                size_mb = 64;
-            }
-            break;
-        default:
-            std::cout << "Invalid choice. Using standard 1024 MB test.\n";
-            size_mb = 1024;
-            break;
-        }
-
-        return size_mb;
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2) << bytes << ' ' << S[idx];
+        return oss.str();
     }
 
-    void run_test()
+    // Optimized memory access patterns
+    inline void stream_write(uint64_t *buffer, size_t elements, uint64_t value)
     {
-        size_t test_size_MB = get_user_input_size();
-        const size_t total_bytes = test_size_MB * 1024 * 1024;
-        const size_t elements = total_bytes / sizeof(uint64_t);
+        for (size_t i = 0; i < elements; i += 8)
+        {
+            buffer[i] = value;
+            buffer[i + 1] = value;
+            buffer[i + 2] = value;
+            buffer[i + 3] = value;
+            buffer[i + 4] = value;
+            buffer[i + 5] = value;
+            buffer[i + 6] = value;
+            buffer[i + 7] = value;
+        }
+    }
 
-        std::cout << "\nTesting " << test_size_MB << " MB...\n";
-        std::cout << "Allocating memory...\n";
+    inline uint64_t stream_read(const uint64_t *buffer, size_t elements)
+    {
+        uint64_t sum0 = 0, sum1 = 0, sum2 = 0, sum3 = 0;
+        uint64_t sum4 = 0, sum5 = 0, sum6 = 0, sum7 = 0;
 
+        for (size_t i = 0; i < elements; i += 8)
+        {
+            sum0 += buffer[i];
+            sum1 += buffer[i + 1];
+            sum2 += buffer[i + 2];
+            sum3 += buffer[i + 3];
+            sum4 += buffer[i + 4];
+            sum5 += buffer[i + 5];
+            sum6 += buffer[i + 6];
+            sum7 += buffer[i + 7];
+        }
+        return sum0 + sum1 + sum2 + sum3 + sum4 + sum5 + sum6 + sum7;
+    }
+
+} // namespace ram_test_internal
+
+inline void test_ram_speed()
+{
+    using namespace ram_test_internal;
+
+    const size_t buffer_bytes = CONFIG_BUFFER_BYTES;
+    const size_t alignment = CONFIG_ALIGNMENT_BYTES;
+    const size_t elements = bytes_to_elements(buffer_bytes);
+
+    if (elements < 1024)
+    {
+        std::cout << "ram_test: buffer too small\n";
+        return;
+    }
+
+    const unsigned hw_threads = std::thread::hardware_concurrency() ? std::thread::hardware_concurrency() : 1u;
+    const unsigned mt_threads = std::max(1u, hw_threads);
+
+    if (CONFIG_VERBOSE)
+    {
+        std::cout << "=== IMPROVED MEMORY BANDWIDTH TEST ===\n";
+        std::cout << "Buffer: " << format_bytes(static_cast<double>(buffer_bytes))
+                  << " (" << elements << " uint64_t elements)\n";
+        std::cout << "Threads: " << mt_threads << "\n\n";
+    }
+
+    // Allocate memory
+    uint64_t *buffer = static_cast<uint64_t *>(aligned_alloc_helper(alignment, elements * sizeof(uint64_t)));
+    std::vector<uint64_t> fallback;
+    bool used_fallback = false;
+
+    if (!buffer)
+    {
         try
         {
-            // Выделяем память
-            std::vector<uint64_t> buffer(elements);
-
-            // Инициализируем случайными данными чтобы избежать оптимизации
-            std::random_device rd;
-            std::mt19937_64 gen(rd());
-            std::uniform_int_distribution<uint64_t> dis;
-
-            std::cout << "Initializing test data...\n";
-            for (size_t i = 0; i < elements; i++)
-            {
-                buffer[i] = dis(gen);
-            }
-
-            // Даем системе время успокоиться
-            std::cout << "Preparing test...\n";
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-            // Тест записи
-            std::cout << "Running write test...\n";
-            auto write_start = std::chrono::high_resolution_clock::now();
-            for (size_t i = 0; i < elements; i += 8)
-            {
-                buffer[i] = i;
-                force_memory_barrier();
-            }
-            auto write_end = std::chrono::high_resolution_clock::now();
-            double write_time = std::chrono::duration<double>(write_end - write_start).count();
-            double write_speed = (elements * sizeof(uint64_t) / (1024.0 * 1024.0)) / write_time;
-
-            // Очищаем кэш между тестами
-            std::cout << "Clearing cache...\n";
-            std::vector<uint64_t> clear_cache(1024 * 1024); // 8 MB для очистки кэша
-            for (size_t i = 0; i < clear_cache.size(); i++)
-            {
-                clear_cache[i] = i;
-            }
-
-            // Тест чтения
-            std::cout << "Running read test...\n";
-            volatile uint64_t checksum = 0;
-            auto read_start = std::chrono::high_resolution_clock::now();
-            for (size_t i = 0; i < elements; i += 8)
-            {
-                checksum ^= buffer[i];
-                force_memory_barrier();
-            }
-            auto read_end = std::chrono::high_resolution_clock::now();
-            double read_time = std::chrono::duration<double>(read_end - read_start).count();
-            double read_speed = (elements * sizeof(uint64_t) / (1024.0 * 1024.0)) / read_time;
-
-            // Вывод результатов
-            std::cout << "\n=== TEST RESULTS ===\n";
-            std::cout << "Test size: " << test_size_MB << " MB\n";
-            std::cout << "Write: " << write_speed << " MB/s\n";
-            std::cout << "Read:  " << read_speed << " MB/s\n";
-            std::cout << "Write time: " << write_time << " seconds\n";
-            std::cout << "Read time: " << read_time << " seconds\n";
-
-            // Анализ результатов
-            if (write_speed > read_speed)
-            {
-                std::cout << "Status: Normal (write faster than read)\n";
-            }
-            else
-            {
-                std::cout << "Status: Abnormal (read faster than write)\n";
-            }
-
-            std::cout << "\nTest completed successfully!\n";
+            fallback.resize(elements);
+            buffer = fallback.data();
+            used_fallback = true;
+            if (CONFIG_VERBOSE)
+                std::cout << "Using std::vector fallback\n";
         }
-        catch (const std::bad_alloc &e)
+        catch (...)
         {
-            std::cout << "Error: Not enough memory to allocate " << test_size_MB << " MB!\n";
-            std::cout << "Try using a smaller test size.\n";
-            return;
-        }
-        catch (const std::exception &e)
-        {
-            std::cout << "Error during test: " << e.what() << "\n";
+            std::cerr << "Allocation failed\n";
             return;
         }
     }
 
-    // Альтернативная функция для автоматического теста без пользовательского ввода
-    void run_auto_test(size_t test_size_MB = 1024)
+    // Initialize memory
+    if (CONFIG_VERBOSE)
+        std::cout << "Initializing memory...\n";
+    for (size_t i = 0; i < elements; ++i)
     {
-        const size_t total_bytes = test_size_MB * 1024 * 1024;
-        const size_t elements = total_bytes / sizeof(uint64_t);
+        buffer[i] = static_cast<uint64_t>(i);
+    }
 
-        std::cout << "=== RAM PERFORMANCE TEST ===\n";
-        std::cout << "Testing " << test_size_MB << " MB...\n";
+    // Test variables
+    double best_write = 0.0, best_read = 0.0;
+    double best_mt_write = 0.0, best_mt_read = 0.0;
+    volatile uint64_t checksum = 0;
 
-        try
+    // Single-threaded WRITE test
+    if (CONFIG_VERBOSE)
+        std::cout << "\nSingle-threaded WRITE...\n";
+    for (size_t iter = 0; iter < CONFIG_WARMUP_ITERATIONS + CONFIG_TEST_ITERATIONS; ++iter)
+    {
+        auto t0 = high_res_clock::now();
+        stream_write(buffer, elements, 0x123456789ABCDEF0ull);
+        compiler_barrier();
+        auto t1 = high_res_clock::now();
+
+        if (iter >= CONFIG_WARMUP_ITERATIONS)
         {
-            std::vector<uint64_t> buffer(elements);
-
-            // Инициализация
-            std::random_device rd;
-            std::mt19937_64 gen(rd());
-            std::uniform_int_distribution<uint64_t> dis;
-
-            for (size_t i = 0; i < elements; i++)
-            {
-                buffer[i] = dis(gen);
-            }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-            // Тест записи
-            auto write_start = std::chrono::high_resolution_clock::now();
-            for (size_t i = 0; i < elements; i += 8)
-            {
-                buffer[i] = i;
-                force_memory_barrier();
-            }
-            auto write_end = std::chrono::high_resolution_clock::now();
-            double write_time = std::chrono::duration<double>(write_end - write_start).count();
-            double write_speed = (elements * sizeof(uint64_t) / (1024.0 * 1024.0)) / write_time;
-
-            // Очистка кэша
-            std::vector<uint64_t> clear_cache(1024 * 1024);
-            for (size_t i = 0; i < clear_cache.size(); i++)
-            {
-                clear_cache[i] = i;
-            }
-
-            // Тест чтения
-            volatile uint64_t checksum = 0;
-            auto read_start = std::chrono::high_resolution_clock::now();
-            for (size_t i = 0; i < elements; i += 8)
-            {
-                checksum ^= buffer[i];
-                force_memory_barrier();
-            }
-            auto read_end = std::chrono::high_resolution_clock::now();
-            double read_time = std::chrono::duration<double>(read_end - read_start).count();
-            double read_speed = (elements * sizeof(uint64_t) / (1024.0 * 1024.0)) / read_time;
-
-            std::cout << "Write: " << write_speed << " MB/s\n";
-            std::cout << "Read:  " << read_speed << " MB/s\n";
-            std::cout << "Test completed\n";
-
-            (void)checksum;
-        }
-        catch (const std::exception &e)
-        {
-            std::cout << "Test failed: " << e.what() << "\n";
+            double sec = seconds_between(t0, t1);
+            double mb = (double)elements * sizeof(uint64_t) / (1024.0 * 1024.0);
+            double speed = mb / sec;
+            best_write = std::max(best_write, speed);
         }
     }
-} // namespace ram_test
+
+    // Single-threaded READ test
+    if (CONFIG_VERBOSE)
+        std::cout << "Single-threaded READ...\n";
+    for (size_t iter = 0; iter < CONFIG_WARMUP_ITERATIONS + CONFIG_TEST_ITERATIONS; ++iter)
+    {
+        auto t0 = high_res_clock::now();
+        uint64_t sum = stream_read(buffer, elements);
+        checksum ^= sum;
+        compiler_barrier();
+        auto t1 = high_res_clock::now();
+
+        if (iter >= CONFIG_WARMUP_ITERATIONS)
+        {
+            double sec = seconds_between(t0, t1);
+            double mb = (double)elements * sizeof(uint64_t) / (1024.0 * 1024.0);
+            double speed = mb / sec;
+            best_read = std::max(best_read, speed);
+        }
+    }
+
+    // Multi-threaded tests
+    auto mt_writer = [&](size_t start, size_t end)
+    {
+        for (size_t i = start; i < end; i += 4)
+        {
+            buffer[i] = 0xDEADBEEF;
+            if (i + 1 < end)
+                buffer[i + 1] = 0xDEADBEEF;
+            if (i + 2 < end)
+                buffer[i + 2] = 0xDEADBEEF;
+            if (i + 3 < end)
+                buffer[i + 3] = 0xDEADBEEF;
+        }
+    };
+
+    auto mt_reader = [&](size_t start, size_t end, std::atomic<uint64_t> &result)
+    {
+        uint64_t sum = 0;
+        for (size_t i = start; i < end; i += 4)
+        {
+            sum += buffer[i];
+            if (i + 1 < end)
+                sum += buffer[i + 1];
+            if (i + 2 < end)
+                sum += buffer[i + 2];
+            if (i + 3 < end)
+                sum += buffer[i + 3];
+        }
+        result.fetch_add(sum, std::memory_order_relaxed);
+    };
+
+    if (CONFIG_VERBOSE)
+        std::cout << "\nMulti-threaded tests...\n";
+    for (size_t attempt = 0; attempt < 3; ++attempt)
+    {
+        // MT WRITE
+        std::vector<std::thread> threads;
+        size_t chunk = elements / mt_threads;
+        auto t0 = high_res_clock::now();
+        for (unsigned th = 0; th < mt_threads; ++th)
+        {
+            size_t s = th * chunk;
+            size_t e = (th + 1 == mt_threads) ? elements : s + chunk;
+            threads.emplace_back(mt_writer, s, e);
+        }
+        for (auto &th : threads)
+            th.join();
+        compiler_barrier();
+        auto t1 = high_res_clock::now();
+        double mb_total = (double)elements * sizeof(uint64_t) / (1024.0 * 1024.0);
+        best_mt_write = std::max(best_mt_write, mb_total / seconds_between(t0, t1));
+
+        // MT READ
+        threads.clear();
+        std::atomic<uint64_t> mt_sum(0);
+        t0 = high_res_clock::now();
+        for (unsigned th = 0; th < mt_threads; ++th)
+        {
+            size_t s = th * chunk;
+            size_t e = (th + 1 == mt_threads) ? elements : s + chunk;
+            threads.emplace_back(mt_reader, s, e, std::ref(mt_sum));
+        }
+        for (auto &th : threads)
+            th.join();
+        compiler_barrier();
+        t1 = high_res_clock::now();
+        best_mt_read = std::max(best_mt_read, mb_total / seconds_between(t0, t1));
+        checksum ^= mt_sum.load(std::memory_order_relaxed);
+    }
+
+    // Results
+    auto print_speed = [](double mb_per_s)
+    {
+        double gb = mb_per_s / 1024.0;
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2) << mb_per_s << " MB/s (" << gb << " GB/s)";
+        return oss.str();
+    };
+
+    std::cout << "\n=== RESULTS ===\n";
+    std::cout << "Single-thread WRITE: " << print_speed(best_write) << '\n';
+    std::cout << "Single-thread READ:  " << print_speed(best_read) << '\n';
+    std::cout << "Multi-thread WRITE:  " << print_speed(best_mt_write) << '\n';
+    std::cout << "Multi-thread READ:   " << print_speed(best_mt_read) << '\n';
+    std::cout << "Checksum: 0x" << std::hex << checksum << std::dec << '\n';
+
+    // Check if results are reasonable
+    std::cout << "\n=== ASSESSMENT ===\n";
+    if (best_mt_read < 15000)
+    {
+        std::cout << "WARNING: Performance seems low for DDR4 3200\n";
+        std::cout << "Expected: 20,000+ MB/s multi-threaded\n";
+        std::cout << "Check: XMP profile in BIOS, dual-channel mode\n";
+    }
+    else
+    {
+        std::cout << "Performance looks reasonable\n";
+    }
+
+    if (!used_fallback)
+        aligned_free_helper(buffer);
+    std::cout << "=== END ===\n\n";
+}

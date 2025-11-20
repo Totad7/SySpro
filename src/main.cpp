@@ -37,7 +37,7 @@ int main()
             break;
         case 2:
             cout << "\n=== MEMORY TEST (RAM) ===\n";
-            ram_test::run_test();
+            test_ram_speed();
             break;
         case 3:
             cout << "\n=== CPU STRESS TEST ===\n";
