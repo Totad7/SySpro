@@ -10,14 +10,14 @@
 #include <sstream>
 #include <stdexcept>
 
-// OpenCL includes
+// Заголовки OpenCL
 #define CL_TARGET_OPENCL_VERSION 120
 #include <CL/opencl.h>
 
 namespace gpu_benchmark_final
 {
 
-    // Float4 structure for SIMD operations
+    // Структура float4 для SIMD операций (4 числа с плавающей точкой)
     struct float4
     {
         float x, y, z, w;
@@ -27,30 +27,36 @@ namespace gpu_benchmark_final
     class UniversalGPUTester
     {
     private:
-        cl_context context;
-        cl_device_id device;
-        cl_command_queue queue;
-        bool opencl_available;
-        std::string device_name;
-        bool is_gpu_device;
-        size_t max_work_group_size;
-        size_t compute_units;
-        cl_ulong global_mem_size;
-        cl_uint clock_frequency;
+        cl_context context;         // Контекст OpenCL
+        cl_device_id device;        // Устройство (GPU/CPU)
+        cl_command_queue queue;     // Очередь команд
+        bool opencl_available;      // Доступность OpenCL
+        std::string device_name;    // Имя устройства
+        std::string device_vendor;  // Производитель
+        bool is_real_gpu;           // Флаг реального GPU (не CPU)
+        size_t max_work_group_size; // Максимальный размер рабочей группы
+        size_t compute_units;       // Количество вычислительных единиц
+        cl_ulong global_mem_size;   // Объем глобальной памяти
+        cl_uint clock_frequency;    // Частота тактов
+        cl_device_type device_type; // Тип устройства
 
+        // Для валидации
+        bool gpu_execution_validated; // Проверка реального исполнения на GPU
+        double gpu_validation_score;  // Результат валидации
+
+        // Структура для хранения результатов тестов
         struct TestResult
         {
-            std::string test_name;
-            double score;
-            std::string unit;
-            std::string rating;
-            double theoretical_max;
-            double percentage;
+            std::string test_name; // Название теста
+            double score;          // Результат
+            std::string unit;      // Единицы измерения
+            std::string rating;    // Оценка (EXCELLENT, GOOD и т.д.)
+            bool validated;        // Валидность результата
         };
 
-        std::vector<TestResult> results;
+        std::vector<TestResult> results; // Массив результатов
 
-        // Safe error checking function
+        // Безопасная проверка ошибок OpenCL
         void check_cl_error(cl_int ret, const std::string &operation)
         {
             if (ret != CL_SUCCESS)
@@ -60,17 +66,18 @@ namespace gpu_benchmark_final
             }
         }
 
-        // Safe program creation with build log
+        // Создание программы с исходным кодом и получением лога сборки
         cl_program create_program_with_source(const char *kernel_code)
         {
             cl_int ret;
             cl_program program = clCreateProgramWithSource(context, 1, &kernel_code, NULL, &ret);
             check_cl_error(ret, "clCreateProgramWithSource");
 
+            // Компиляция программы
             ret = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
             if (ret != CL_SUCCESS)
             {
-                // Get build log
+                // Получение лога сборки при ошибке
                 size_t log_size;
                 clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
                 std::vector<char> build_log(log_size);
@@ -84,7 +91,7 @@ namespace gpu_benchmark_final
             return program;
         }
 
-        // Safe buffer creation
+        // Безопасное создание буфера памяти
         cl_mem create_buffer(cl_mem_flags flags, size_t size, void *host_ptr = nullptr)
         {
             cl_int ret;
@@ -93,7 +100,7 @@ namespace gpu_benchmark_final
             return buffer;
         }
 
-        // Safe kernel creation
+        // Безопасное создание ядра
         cl_kernel create_kernel(cl_program program, const std::string &kernel_name)
         {
             cl_int ret;
@@ -102,6 +109,91 @@ namespace gpu_benchmark_final
             return kernel;
         }
 
+        // ТЕСТ ВАЛИДАЦИИ РЕАЛЬНОГО GPU
+        // Проверяет, действительно ли код выполняется на GPU, а не на CPU
+        bool validate_gpu_execution()
+        {
+            try
+            {
+                // Ядро, которое неэффективно на CPU, но эффективно на GPU
+                const char *validation_kernel =
+                    "__kernel void gpu_validation(__global float4* data) {\n"
+                    "    int gid = get_global_id(0);\n"
+                    "    float4 x = data[gid];\n"
+                    "    float4 result = x;\n"
+                    "    \n"
+                    "    // Оптимизировано для GPU: много параллельных операций\n"
+                    "    for(int i = 0; i < 1024; i++) {\n"
+                    "        result = mad(result, x, (float4)(1.0f));\n"
+                    "        result = sin(result) + cos(result);\n"
+                    "    }\n"
+                    "    \n"
+                    "    data[gid] = result;\n"
+                    "}\n";
+
+                const size_t work_items = 16384; // Оптимально для GPU
+                std::vector<float4> data(work_items);
+
+                // Инициализация случайными значениями
+                std::random_device rd;
+                std::mt19937 gen(rd());
+                std::uniform_real_distribution<float> dis(0.1f, 2.0f);
+                for (auto &v : data)
+                    v = float4(dis(gen), dis(gen), dis(gen), dis(gen));
+
+                cl_program program = create_program_with_source(validation_kernel);
+                cl_kernel kernel = create_kernel(program, "gpu_validation");
+
+                cl_mem buffer = create_buffer(CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                                              work_items * sizeof(float4), data.data());
+                check_cl_error(clSetKernelArg(kernel, 0, sizeof(cl_mem), &buffer), "clSetKernelArg");
+
+                size_t global_size = work_items;
+                size_t local_size = 256;
+
+                // Измерение времени выполнения
+                auto start = std::chrono::high_resolution_clock::now();
+                check_cl_error(clEnqueueNDRangeKernel(queue, kernel, 1, NULL,
+                                                      &global_size, &local_size, 0, NULL, NULL),
+                               "clEnqueueNDRangeKernel");
+                check_cl_error(clFinish(queue), "clFinish");
+                auto end = std::chrono::high_resolution_clock::now();
+
+                double time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+
+                // Расчет операций
+                double operations = work_items * 1024 * 8 * 4; // 8 операций × 4 компонента
+                double gflops = operations / (time_ms * 1e6);  // GFLOPS
+
+                gpu_validation_score = gflops;
+
+                // Пороги валидации
+                if (device_type == CL_DEVICE_TYPE_GPU)
+                {
+                    // Реальный GPU должен показывать > 100 GFLOPS в этом тесте
+                    gpu_execution_validated = (gflops > 100.0);
+                }
+                else
+                {
+                    // CPU будет значительно медленнее
+                    gpu_execution_validated = false;
+                }
+
+                // Освобождение ресурсов
+                clReleaseMemObject(buffer);
+                clReleaseKernel(kernel);
+                clReleaseProgram(program);
+
+                return gpu_execution_validated;
+            }
+            catch (...)
+            {
+                gpu_execution_validated = false;
+                return false;
+            }
+        }
+
+        // Инициализация OpenCL с выбором устройства
         bool init_opencl()
         {
             cl_platform_id platform;
@@ -109,65 +201,81 @@ namespace gpu_benchmark_final
 
             try
             {
-                std::cout << "Searching for OpenCL devices...\n";
+                // Получение платформы
                 ret = clGetPlatformIDs(1, &platform, NULL);
                 if (ret != CL_SUCCESS)
-                {
-                    std::cout << "OpenCL not available\n";
                     return false;
-                }
 
-                // Try GPU first, then CPU
-                ret = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
-                if (ret == CL_SUCCESS)
+                // Поиск всех устройств
+                cl_uint num_devices = 0;
+
+                // Сначала ищем GPU устройства
+                ret = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, NULL, &num_devices);
+                std::vector<cl_device_id> gpu_devices(num_devices);
+
+                if (num_devices > 0 && ret == CL_SUCCESS)
                 {
-                    is_gpu_device = true;
-                    std::cout << "GPU device detected\n";
-                }
-                else
-                {
-                    std::cout << "Using CPU for computation\n";
-                    ret = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 1, &device, NULL);
-                    if (ret != CL_SUCCESS)
+                    // Получаем GPU устройства
+                    ret = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, num_devices,
+                                         gpu_devices.data(), NULL);
+                    if (ret == CL_SUCCESS)
                     {
-                        std::cout << "No OpenCL devices found\n";
-                        return false;
+                        // Используем первый найденный GPU
+                        device = gpu_devices[0];
+                        device_type = CL_DEVICE_TYPE_GPU;
+                        is_real_gpu = true;
                     }
-                    is_gpu_device = false;
                 }
 
-                // Get device information
-                char name[128];
-                clGetDeviceInfo(device, CL_DEVICE_NAME, sizeof(name), name, NULL);
-                device_name = name;
+                // Если GPU не найден, пробуем CPU
+                if (!device)
+                {
+                    ret = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 0, NULL, &num_devices);
+                    if (num_devices > 0 && ret == CL_SUCCESS)
+                    {
+                        std::vector<cl_device_id> cpu_devices(num_devices);
+                        ret = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, num_devices,
+                                             cpu_devices.data(), NULL);
+                        if (ret == CL_SUCCESS)
+                        {
+                            device = cpu_devices[0];
+                            device_type = CL_DEVICE_TYPE_CPU;
+                            is_real_gpu = false;
+                        }
+                    }
+                }
 
-                // Get hardware specifications
+                if (!device)
+                    return false;
+
+                // Получение информации об устройстве
+                char name[256];
+                char vendor[256];
+                clGetDeviceInfo(device, CL_DEVICE_NAME, sizeof(name), name, NULL);
+                clGetDeviceInfo(device, CL_DEVICE_VENDOR, sizeof(vendor), vendor, NULL);
+                device_name = name;
+                device_vendor = vendor;
+
                 clGetDeviceInfo(device, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(compute_units), &compute_units, NULL);
                 clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(max_work_group_size), &max_work_group_size, NULL);
                 clGetDeviceInfo(device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_mem_size), &global_mem_size, NULL);
                 clGetDeviceInfo(device, CL_DEVICE_MAX_CLOCK_FREQUENCY, sizeof(clock_frequency), &clock_frequency, NULL);
 
-                // Validate device info
-                if (compute_units == 0 || max_work_group_size == 0 || global_mem_size == 0)
-                {
-                    throw std::runtime_error("Invalid device parameters");
-                }
-
-                // Create OpenCL context and queue
+                // Создание контекста и очереди команд
                 context = clCreateContext(NULL, 1, &device, NULL, NULL, &ret);
                 check_cl_error(ret, "clCreateContext");
 
                 queue = clCreateCommandQueue(context, device, 0, &ret);
                 check_cl_error(ret, "clCreateCommandQueue");
 
-                std::cout << "Device: " << device_name << "\n";
-                std::cout << "Type: " << (is_gpu_device ? "GPU" : "CPU") << "\n";
+                // Валидация исполнения на GPU
+                gpu_execution_validated = validate_gpu_execution();
 
                 return true;
             }
             catch (const std::exception &e)
             {
-                std::cout << "OpenCL initialization failed: " << e.what() << "\n";
+                // Очистка ресурсов при ошибке
                 if (context)
                     clReleaseContext(context);
                 if (queue)
@@ -176,360 +284,331 @@ namespace gpu_benchmark_final
             }
         }
 
-        void add_result(const std::string &name, double score, const std::string &unit,
-                        double theoretical = 0)
+        // Добавление результата теста
+        void add_result(const std::string &name, double score, const std::string &unit, bool validated = true)
         {
-            double percentage = theoretical > 0 ? (score / theoretical) * 100 : 0;
             std::string rating;
 
-            // Universal rating system based on percentage of theoretical maximum
-            if (percentage > 0)
+            if (!validated || !gpu_execution_validated)
             {
-                if (percentage > 80)
+                rating = "UNVERIFIED"; // Непроверенный результат
+            }
+            else if (name.find("Memory") != std::string::npos)
+            {
+                // Оценка пропускной способности памяти для реального GPU
+                if (score > 400)
                     rating = "EXCELLENT";
-                else if (percentage > 60)
+                else if (score > 250)
                     rating = "VERY GOOD";
-                else if (percentage > 40)
+                else if (score > 150)
                     rating = "GOOD";
-                else if (percentage > 20)
+                else if (score > 80)
                     rating = "AVERAGE";
+                else if (score > 30)
+                    rating = "LIMITED";
+                else
+                    rating = "LOW";
+            }
+            else if (name.find("Compute") != std::string::npos)
+            {
+                // Оценка вычислительной производительности
+                if (score > 5000)
+                    rating = "EXCELLENT";
+                else if (score > 2000)
+                    rating = "VERY GOOD";
+                else if (score > 800)
+                    rating = "GOOD";
+                else if (score > 300)
+                    rating = "AVERAGE";
+                else if (score > 100)
+                    rating = "LIMITED";
                 else
                     rating = "LOW";
             }
             else
             {
-                // Fallback absolute ratings
-                if (name.find("Memory") != std::string::npos)
-                {
-                    if (score > 300)
-                        rating = "EXCELLENT";
-                    else if (score > 200)
-                        rating = "VERY GOOD";
-                    else if (score > 100)
-                        rating = "GOOD";
-                    else if (score > 50)
-                        rating = "AVERAGE";
-                    else
-                        rating = "LOW";
-                }
-                else
-                {
-                    if (score > 3000)
-                        rating = "EXCELLENT";
-                    else if (score > 2000)
-                        rating = "VERY GOOD";
-                    else if (score > 1000)
-                        rating = "GOOD";
-                    else if (score > 500)
-                        rating = "AVERAGE";
-                    else
-                        rating = "LOW";
-                }
+                rating = "TESTED"; // Общий статус
             }
 
-            results.push_back({name, score, unit, rating, theoretical, percentage});
+            results.push_back({name, score, unit, rating, validated});
         }
 
-        void print_device_info()
-        {
-            if (!opencl_available)
-                return;
-
-            try
-            {
-                cl_ulong local_mem;
-                cl_uint vector_width;
-
-                clGetDeviceInfo(device, CL_DEVICE_LOCAL_MEM_SIZE, sizeof(local_mem), &local_mem, NULL);
-                clGetDeviceInfo(device, CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT, sizeof(vector_width), &vector_width, NULL);
-
-                std::cout << "\n=== DEVICE SPECIFICATIONS ===\n";
-                std::cout << "Name: " << device_name << "\n";
-                std::cout << "Type: " << (is_gpu_device ? "Graphics Card (GPU)" : "Processor (CPU)") << "\n";
-                std::cout << "Compute Units: " << compute_units << "\n";
-                std::cout << "Memory: " << global_mem_size / (1024 * 1024) << " MB\n";
-                std::cout << "Local Memory: " << local_mem / 1024 << " KB\n";
-                std::cout << "Max Work Group: " << max_work_group_size << "\n";
-                std::cout << "Clock Frequency: " << clock_frequency << " MHz\n";
-                std::cout << "Float Vector Width: " << vector_width << "\n";
-
-                // Conservative theoretical performance calculation
-                if (is_gpu_device)
-                {
-                    double theoretical_gflops = compute_units * max_work_group_size * 2.0 * (clock_frequency / 1000.0);
-                    double theoretical_bandwidth = (global_mem_size / (1024.0 * 1024 * 1024)) * 2.0; // Conservative estimate
-
-                    std::cout << "Theoretical GFLOPS: ~" << theoretical_gflops << " GFLOPS\n";
-                    std::cout << "Theoretical Bandwidth: ~" << theoretical_bandwidth << " GB/s\n";
-                }
-            }
-            catch (const std::exception &e)
-            {
-                std::cout << "Error getting device info: " << e.what() << "\n";
-            }
-        }
-
-        // Conservative theoretical performance calculation
-        double calculate_theoretical_gflops()
-        {
-            if (!is_gpu_device)
-                return 0;
-            // Conservative estimate: compute_units * work_group_size * 2 ops/cycle * frequency
-            return compute_units * std::min(max_work_group_size, size_t(256)) * 2.0 * (clock_frequency / 1000.0);
-        }
-
-        double calculate_theoretical_bandwidth()
-        {
-            if (!is_gpu_device)
-                return 0;
-            // Conservative bandwidth estimation
-            return (global_mem_size / (1024.0 * 1024 * 1024)) * 2.0;
-        }
-
+        // Расчет безопасного количества рабочих элементов
         size_t calculate_safe_work_items()
         {
-            size_t base_items = compute_units * std::min(max_work_group_size, size_t(256)) * 16;
-
-            if (is_gpu_device)
+            if (!gpu_execution_validated && is_real_gpu)
             {
-                return std::min(std::max(base_items, size_t(256 * 256)), size_t(1024 * 1024));
+                // Консервативный размер если GPU не валидирован
+                return 32768;
+            }
+
+            size_t base_items = compute_units * std::min(max_work_group_size, size_t(256)) * 32;
+
+            if (is_real_gpu && gpu_execution_validated)
+            {
+                // Больше элементов для реального GPU
+                return std::min(std::max(base_items, size_t(65536)), size_t(1048576));
             }
             else
             {
-                return std::min(base_items, size_t(128 * 1024));
+                // Меньше для CPU или непроверенного GPU
+                return std::min(base_items, size_t(32768));
             }
         }
 
+        // Расчет безопасного объема памяти для тестирования
         size_t calculate_safe_memory_size()
         {
-            // Use maximum 25% of available memory, but cap at reasonable size
-            size_t max_safe = global_mem_size / 4;
-            size_t reasonable_max = is_gpu_device ? 256 * 1024 * 1024 : 64 * 1024 * 1024;
+            size_t max_safe = global_mem_size / 8; // 12.5% от общей памяти
+            size_t reasonable_max;
+
+            if (is_real_gpu && gpu_execution_validated)
+            {
+                reasonable_max = 128 * 1024 * 1024; // 128MB для GPU
+            }
+            else
+            {
+                reasonable_max = 32 * 1024 * 1024; // 32MB для CPU/непроверенного
+            }
+
             return std::min(max_safe, reasonable_max);
         }
 
-        void test_memory_bandwidth_universal()
+        // ТЕСТ ПРОПУСКНОЙ СПОСОБНОСТИ ПАМЯТИ
+        void test_memory_bandwidth_real()
         {
             if (!opencl_available)
                 return;
 
-            std::cout << "\n=== MEMORY BANDWIDTH TEST ===\n";
-            std::cout << "Testing: " << (is_gpu_device ? "GPU Memory" : "CPU Memory") << "\n";
-
             try
             {
-                // Safe memory size calculation
                 size_t test_memory = calculate_safe_memory_size();
                 size_t element_count = test_memory / sizeof(float);
 
-                if (element_count < 1024)
-                {
-                    throw std::runtime_error("Insufficient memory for test");
-                }
+                if (element_count < 4096)
+                    throw std::runtime_error("Memory too small");
 
-                const int iterations = 5; // Reduced for stability
-
-                // Optimized memory bandwidth kernel with coalesced access
+                // Реальный тест памяти с правильными паттернами доступа
                 const char *kernel_code =
-                    "__kernel void bandwidth_test(__global float4* input, __global float4* output) {\n"
-                    "    int gid = get_global_id(0);\n"
-                    "    float4 data = input[gid];\n" // Coalesced access
-                    "    // Multiple operations on same data to test bandwidth\n"
-                    "    output[gid] = data * 2.0f + data * 1.5f - data * 0.5f + data * 3.0f;\n"
+                    "__kernel void real_memory_test(__global float4* a, __global float4* b, __global float4* c) {\n"
+                    "    int idx = get_global_id(0);\n"
+                    "    int stride = get_global_size(0);\n"
+                    "    \n"
+                    "    // Последовательный доступ (хорошо и для GPU и для CPU)\n"
+                    "    float4 sum = (float4)(0.0f);\n"
+                    "    for(int i = 0; i < 16; i++) {\n"
+                    "        int pos = (idx + i * stride) % (get_global_size(0));\n"
+                    "        sum += a[pos] * b[pos];\n"
+                    "    }\n"
+                    "    c[idx] = sum;\n"
                     "}\n";
 
                 cl_program program = create_program_with_source(kernel_code);
-                cl_kernel kernel = create_kernel(program, "bandwidth_test");
+                cl_kernel kernel = create_kernel(program, "real_memory_test");
 
                 size_t float4_count = element_count / 4;
-                std::vector<float4> input_data(float4_count);
-                std::vector<float4> output_data(float4_count);
+                size_t actual_count = (float4_count / 256) * 256; // Выравнивание по 256
 
-                // Initialize test data
+                // Подготовка тестовых данных
+                std::vector<float4> a(actual_count);
+                std::vector<float4> b(actual_count);
+                std::vector<float4> c(actual_count);
+
                 std::random_device rd;
                 std::mt19937 gen(rd());
-                std::uniform_real_distribution<float> dis(1.0f, 100.0f);
+                std::uniform_real_distribution<float> dis(0.1f, 1.0f);
 
-                for (size_t i = 0; i < float4_count; i++)
+                for (size_t i = 0; i < actual_count; i++)
                 {
-                    input_data[i] = float4(dis(gen), dis(gen), dis(gen), dis(gen));
+                    a[i] = float4(dis(gen), dis(gen), dis(gen), dis(gen));
+                    b[i] = float4(dis(gen), dis(gen), dis(gen), dis(gen));
                 }
 
-                cl_mem input_buffer = create_buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                                    float4_count * sizeof(float4), input_data.data());
-                cl_mem output_buffer = create_buffer(CL_MEM_WRITE_ONLY,
-                                                     float4_count * sizeof(float4), NULL);
+                // Создание буферов в памяти устройства
+                cl_mem buf_a = create_buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                             actual_count * sizeof(float4), a.data());
+                cl_mem buf_b = create_buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                             actual_count * sizeof(float4), b.data());
+                cl_mem buf_c = create_buffer(CL_MEM_WRITE_ONLY,
+                                             actual_count * sizeof(float4), NULL);
 
-                check_cl_error(clSetKernelArg(kernel, 0, sizeof(cl_mem), &input_buffer), "clSetKernelArg");
-                check_cl_error(clSetKernelArg(kernel, 1, sizeof(cl_mem), &output_buffer), "clSetKernelArg");
+                // Установка аргументов ядра
+                check_cl_error(clSetKernelArg(kernel, 0, sizeof(cl_mem), &buf_a), "clSetKernelArg");
+                check_cl_error(clSetKernelArg(kernel, 1, sizeof(cl_mem), &buf_b), "clSetKernelArg");
+                check_cl_error(clSetKernelArg(kernel, 2, sizeof(cl_mem), &buf_c), "clSetKernelArg");
 
-                size_t global_size = float4_count;
-                size_t local_size = std::min(max_work_group_size, static_cast<size_t>(256));
+                size_t global_size = actual_count;
+                size_t local_size = 256;
 
-                // Ensure divisible work groups
-                while (global_size % local_size != 0 && local_size > 1)
-                {
+                // Выравнивание размера рабочей группы
+                while (global_size % local_size != 0)
                     local_size /= 2;
+
+                // Прогрев (warm-up)
+                for (int i = 0; i < 2; i++)
+                {
+                    check_cl_error(clEnqueueNDRangeKernel(queue, kernel, 1, NULL,
+                                                          &global_size, &local_size, 0, NULL, NULL),
+                                   "clEnqueueNDRangeKernel");
                 }
+                clFinish(queue);
 
-                // Warm-up execution
-                check_cl_error(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL), "clEnqueueNDRangeKernel");
-                check_cl_error(clFinish(queue), "clFinish");
-
+                // Основное измерение
+                const int iterations = 10;
                 auto start = std::chrono::high_resolution_clock::now();
 
                 for (int i = 0; i < iterations; i++)
                 {
-                    check_cl_error(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL), "clEnqueueNDRangeKernel");
+                    check_cl_error(clEnqueueNDRangeKernel(queue, kernel, 1, NULL,
+                                                          &global_size, &local_size, 0, NULL, NULL),
+                                   "clEnqueueNDRangeKernel");
                 }
+                clFinish(queue);
 
-                check_cl_error(clFinish(queue), "clFinish");
                 auto end = std::chrono::high_resolution_clock::now();
-
                 double time_seconds = std::chrono::duration<double>(end - start).count();
 
-                // Bandwidth calculation: 1 read + 1 write per work item
-                double bytes_processed = float4_count * 2 * sizeof(float4) * iterations;
-                double bandwidth = bytes_processed / (time_seconds * 1024 * 1024 * 1024);
+                // Точный расчет пропускной способности
+                // Каждая итерация: чтение a, чтение b, запись c = 3 передачи
+                // Каждый рабочий элемент обрабатывает 16 элементов
+                double bytes_processed = actual_count * 16 * 3 * sizeof(float4) * iterations;
+                double bandwidth = bytes_processed / (time_seconds * 1024 * 1024 * 1024); // GB/s
 
-                std::cout << "Memory Speed: " << std::fixed << std::setprecision(2) << bandwidth << " GB/s\n";
-                std::cout << "Execution Time: " << time_seconds << " seconds\n";
-                std::cout << "Data Processed: " << bytes_processed / (1024 * 1024 * 1024) << " GB\n";
-                std::cout << "Work Items: " << global_size << "\n";
+                // Валидация результата
+                bool validated = gpu_execution_validated;
+                if (is_real_gpu && bandwidth < 20.0) // Нереалистично для GPU
+                {
+                    validated = false;
+                }
 
-                double theoretical_bw = calculate_theoretical_bandwidth();
-                add_result("Memory Bandwidth", bandwidth, "GB/s", theoretical_bw);
+                add_result("Memory Bandwidth", bandwidth, "GB/s", validated);
 
-                // Cleanup
-                clReleaseMemObject(input_buffer);
-                clReleaseMemObject(output_buffer);
+                // Освобождение ресурсов
+                clReleaseMemObject(buf_a);
+                clReleaseMemObject(buf_b);
+                clReleaseMemObject(buf_c);
                 clReleaseKernel(kernel);
                 clReleaseProgram(program);
             }
             catch (const std::exception &e)
             {
-                std::cout << "Memory bandwidth test failed: " << e.what() << "\n";
+                add_result("Memory Bandwidth", 0, "GB/s", false);
             }
         }
 
-        void test_compute_performance_universal()
+        // ТЕСТ ВЫЧИСЛИТЕЛЬНОЙ ПРОИЗВОДИТЕЛЬНОСТИ
+        void test_compute_performance_real()
         {
             if (!opencl_available)
                 return;
 
-            std::cout << "\n=== COMPUTE PERFORMANCE TEST ===\n";
-            std::cout << "Testing: " << (is_gpu_device ? "GPU" : "CPU") << "\n";
-
             try
             {
-                // Safe work item calculation
                 size_t work_items = calculate_safe_work_items();
-                const int iterations = 3; // Reduced for stability
 
-                // Optimized compute kernel without expensive operations
+                // Реальный тест вычислений со смешанными операциями
                 const char *kernel_code =
-                    "__kernel void compute_test(__global float4* input, __global float4* output) {\n"
-                    "    int gid = get_global_id(0);\n"
-                    "    float4 x = input[gid];\n"
+                    "__kernel void real_compute_test(__global float4* data) {\n"
+                    "    int idx = get_global_id(0);\n"
+                    "    float4 x = data[idx];\n"
                     "    \n"
-                    "    // Use cheaper arithmetic operations\n"
+                    "    // Реальная вычислительная нагрузка\n"
                     "    float4 result = x;\n"
-                    "    for (int i = 0; i < 8; i++) {\n"
-                    "        result = mad(result, x, (float4)(1.0f));\n" // FMA operations\n"
-                    "        result = result * 0.5f + x * 0.5f;\n"
+                    "    for(int iter = 0; iter < 64; iter++) {\n"
+                    "        // Смешанная арифметика\n"
+                    "        result = mad(result, x, (float4)(1.0f));\n"
+                    "        result = 0.5f * (result + 1.0f / result);\n" // Шаг Ньютона
+                    "        // Тригонометрия (дорогая операция)\n"
+                    "        result.x = sin(result.x) + cos(result.y);\n"
+                    "        result.y = sin(result.y) + cos(result.z);\n"
+                    "        result.z = sin(result.z) + cos(result.w);\n"
+                    "        result.w = sin(result.w) + cos(result.x);\n"
                     "    }\n"
                     "    \n"
-                    "    output[gid] = result;\n"
+                    "    data[idx] = result;\n"
                     "}\n";
 
                 cl_program program = create_program_with_source(kernel_code);
-                cl_kernel kernel = create_kernel(program, "compute_test");
+                cl_kernel kernel = create_kernel(program, "real_compute_test");
 
-                std::vector<float4> input_data(work_items);
-                std::vector<float4> output_data(work_items);
-
-                // Initialize test data
+                // Подготовка тестовых данных
+                std::vector<float4> data(work_items);
                 std::random_device rd;
                 std::mt19937 gen(rd());
-                std::uniform_real_distribution<float> dis(0.1f, 5.0f);
+                std::uniform_real_distribution<float> dis(0.5f, 1.5f);
 
                 for (size_t i = 0; i < work_items; i++)
                 {
-                    input_data[i] = float4(dis(gen), dis(gen), dis(gen), dis(gen));
+                    data[i] = float4(dis(gen), dis(gen), dis(gen), dis(gen));
                 }
 
-                cl_mem input_buffer = create_buffer(CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                                    work_items * sizeof(float4), input_data.data());
-                cl_mem output_buffer = create_buffer(CL_MEM_WRITE_ONLY,
-                                                     work_items * sizeof(float4), NULL);
-
-                check_cl_error(clSetKernelArg(kernel, 0, sizeof(cl_mem), &input_buffer), "clSetKernelArg");
-                check_cl_error(clSetKernelArg(kernel, 1, sizeof(cl_mem), &output_buffer), "clSetKernelArg");
+                cl_mem buffer = create_buffer(CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                                              work_items * sizeof(float4), data.data());
+                check_cl_error(clSetKernelArg(kernel, 0, sizeof(cl_mem), &buffer),
+                               "clSetKernelArg");
 
                 size_t global_size = work_items;
-                size_t local_size = std::min(max_work_group_size, static_cast<size_t>(256));
-
-                // Ensure divisible work groups
+                size_t local_size = 256;
                 while (global_size % local_size != 0 && local_size > 1)
-                {
                     local_size /= 2;
-                }
 
-                // Warm-up
-                check_cl_error(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL), "clEnqueueNDRangeKernel");
-                check_cl_error(clFinish(queue), "clFinish");
+                // Прогрев
+                clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size,
+                                       &local_size, 0, NULL, NULL);
+                clFinish(queue);
 
+                // Основное измерение
+                const int iterations = 5;
                 auto start = std::chrono::high_resolution_clock::now();
 
                 for (int i = 0; i < iterations; i++)
                 {
-                    check_cl_error(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL), "clEnqueueNDRangeKernel");
+                    clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size,
+                                           &local_size, 0, NULL, NULL);
                 }
+                clFinish(queue);
 
-                check_cl_error(clFinish(queue), "clFinish");
                 auto end = std::chrono::high_resolution_clock::now();
-
                 double time_seconds = std::chrono::duration<double>(end - start).count();
 
-                // Conservative FLOPS calculation
-                double flops_per_workitem = 8 * 4 * 4; // 8 iterations × 4 components × 4 operations
-                double total_flops = work_items * flops_per_workitem * iterations;
-                double gflops = total_flops / (time_seconds * 1e9);
+                // Точный подсчет операций с плавающей точкой
+                // За итерацию: 2 mad + 3 арифметики + 4 sin/cos = ~9 операций на компонент
+                // 64 итерации × 4 компонента × 9 операций = 2304 операций на рабочий элемент
+                double total_flops = work_items * 2304 * iterations;
+                double gflops = total_flops / (time_seconds * 1e9); // GFLOPS
 
-                std::cout << "Compute Performance: " << gflops << " GFLOPS\n";
-                std::cout << "Execution Time: " << time_seconds << " seconds\n";
-                std::cout << "Work Items: " << work_items << " (scaled)\n";
-                std::cout << "Total Operations: " << total_flops / 1e9 << " GOperations\n";
+                // Валидация результата
+                bool validated = gpu_execution_validated;
+                if (is_real_gpu && gflops < 50.0) // Нереалистично для реального GPU
+                {
+                    validated = false;
+                }
 
-                double theoretical_gflops = calculate_theoretical_gflops();
-                add_result("Compute Performance", gflops, "GFLOPS", theoretical_gflops);
+                add_result("Compute Performance", gflops, "GFLOPS", validated);
 
-                // Cleanup
-                clReleaseMemObject(input_buffer);
-                clReleaseMemObject(output_buffer);
+                // Освобождение ресурсов
+                clReleaseMemObject(buffer);
                 clReleaseKernel(kernel);
                 clReleaseProgram(program);
             }
             catch (const std::exception &e)
             {
-                std::cout << "Compute performance test failed: " << e.what() << "\n";
+                add_result("Compute Performance", 0, "GFLOPS", false);
             }
         }
 
     public:
+        // Конструктор - инициализация OpenCL
         UniversalGPUTester() : context(nullptr), device(nullptr), queue(nullptr),
-                               opencl_available(false), is_gpu_device(false),
+                               opencl_available(false), is_real_gpu(false),
                                max_work_group_size(0), compute_units(0),
-                               global_mem_size(0), clock_frequency(0)
+                               global_mem_size(0), clock_frequency(0),
+                               gpu_execution_validated(false), gpu_validation_score(0)
         {
-            std::cout << "Initializing Universal GPU Benchmark...\n";
             opencl_available = init_opencl();
-            if (opencl_available)
-            {
-                print_device_info();
-            }
         }
 
+        // Деструктор - освобождение ресурсов OpenCL
         ~UniversalGPUTester()
         {
             if (queue)
@@ -538,65 +617,82 @@ namespace gpu_benchmark_final
                 clReleaseContext(context);
         }
 
+        // Методы доступа
         bool is_available() const { return opencl_available; }
-        bool is_gpu() const { return is_gpu_device; }
+        bool is_gpu() const { return is_real_gpu; }
+        bool is_validated() const { return gpu_execution_validated; }
 
+        // Запуск комплексного тестирования
         void run_comprehensive_test()
         {
             if (!opencl_available)
             {
-                std::cout << "Benchmark not available - OpenCL required\n";
+                std::cout << "OpenCL not available\n";
                 return;
             }
 
-            try
+            // Вывод информации об устройстве
+            std::cout << "\n=== UNIVERSAL GPU BENCHMARK ===\n";
+            std::cout << "Device: " << device_name << "\n";
+            std::cout << "Vendor: " << device_vendor << "\n";
+            std::cout << "Type: " << (is_real_gpu ? "GPU" : "CPU") << "\n";
+            std::cout << "GPU Validated: " << (gpu_execution_validated ? "YES" : "NO") << "\n";
+
+            if (is_real_gpu && !gpu_execution_validated)
             {
-                std::cout << "\nSTARTING UNIVERSAL PERFORMANCE BENCHMARK\n";
-                std::cout << "==========================================\n";
-                std::cout << "Device: " << (is_gpu_device ? "GRAPHICS CARD (GPU)" : "PROCESSOR (CPU)") << "\n\n";
-
-                results.clear();
-
-                test_memory_bandwidth_universal();
-                test_compute_performance_universal();
-
-                // Display results
-                std::cout << "\n"
-                          << std::string(70, '=') << "\n";
-                std::cout << "BENCHMARK RESULTS\n";
-                std::cout << std::string(70, '=') << "\n";
-                std::cout << "Device: " << device_name << "\n";
-                std::cout << "Type: " << (is_gpu_device ? "GPU" : "CPU") << "\n\n";
-
-                std::cout << std::left << std::setw(25) << "TEST"
-                          << std::setw(12) << "SCORE"
-                          << std::setw(8) << "UNITS"
-                          << std::setw(12) << "RATING"
-                          << "THEORETICAL\n";
-                std::cout << std::string(70, '-') << "\n";
-
-                for (const auto &result : results)
-                {
-                    std::cout << std::left << std::setw(25) << result.test_name
-                              << std::right << std::setw(10) << std::fixed << std::setprecision(2)
-                              << result.score << " " << std::setw(6) << result.unit
-                              << " [" << std::setw(10) << result.rating << "]";
-
-                    if (result.theoretical_max > 0)
-                    {
-                        std::cout << " (" << std::fixed << std::setprecision(1) << result.percentage << "%)";
-                    }
-                    std::cout << "\n";
-                }
+                std::cout << "WARNING: GPU detected but execution not validated!\n";
+                std::cout << "Validation Score: " << gpu_validation_score << " GFLOPS\n";
             }
-            catch (const std::exception &e)
+
+            std::cout << "===============================\n\n";
+
+            results.clear();
+
+            // Запуск тестов
+            test_memory_bandwidth_real();
+            test_compute_performance_real();
+
+            // Отображение результатов в таблице
+            std::cout << "\n"
+                      << std::string(70, '=') << "\n";
+            std::cout << "BENCHMARK RESULTS\n";
+            std::cout << std::string(70, '=') << "\n\n";
+
+            std::cout << std::left << std::setw(25) << "TEST"
+                      << std::setw(12) << "SCORE"
+                      << std::setw(8) << "UNITS"
+                      << std::setw(15) << "RATING"
+                      << std::setw(10) << "STATUS\n";
+            std::cout << std::string(70, '-') << "\n";
+
+            for (const auto &result : results)
             {
-                std::cout << "Benchmark failed with error: " << e.what() << "\n";
+                std::cout << std::left << std::setw(25) << result.test_name
+                          << std::right << std::setw(10) << std::fixed << std::setprecision(2)
+                          << result.score << " " << std::setw(6) << result.unit
+                          << " [" << std::setw(12) << result.rating << "] "
+                          << (result.validated ? "+" : "!!") << "\n";
+            }
+
+            std::cout << std::string(70, '=') << "\n";
+
+            // Сводка
+            if (!gpu_execution_validated && is_real_gpu)
+            {
+                std::cout << "\n   WARNING: Results may not reflect actual GPU performance!\n";
+                std::cout << "   Possible reasons:\n";
+                std::cout << "   1. Fallback to CPU execution\n";
+                std::cout << "   2. Driver emulation\n";
+                std::cout << "   3. Power/thermal throttling\n";
+            }
+            else if (gpu_execution_validated)
+            {
+                std::cout << "\n   GPU execution validated\n";
             }
         }
     };
 
-    // Public interface
+    // Внешняя функция для запуска теста
     inline void run_universal_gpu_test()
     {
         try
@@ -605,15 +701,25 @@ namespace gpu_benchmark_final
             if (tester.is_available())
             {
                 tester.run_comprehensive_test();
+
+                // Финальное предупреждение если необходимо
+                if (tester.is_gpu() && !tester.is_validated())
+                {
+                    std::cout << "\n  IMPORTANT: This test may be running on CPU!\n";
+                    std::cout << "   For accurate GPU benchmarking, ensure:\n";
+                    std::cout << "   1. Latest GPU drivers installed\n";
+                    std::cout << "   2. No power saving modes\n";
+                    std::cout << "   3. Discrete GPU selected in system settings\n";
+                }
             }
             else
             {
-                std::cout << "GPU benchmarking not available on this system\n";
+                std::cout << "OpenCL not available. Install GPU drivers.\n";
             }
         }
         catch (const std::exception &e)
         {
-            std::cout << "Fatal error in GPU benchmark: " << e.what() << "\n";
+            std::cout << "Benchmark error: " << e.what() << "\n";
         }
     }
 

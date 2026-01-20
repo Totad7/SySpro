@@ -1,7 +1,6 @@
 #pragma once
 /**
- * ram_test.h - IMPROVED VERSION
- * Better memory bandwidth test with optimizations
+ * memory_bandwidth_test.h - УНИВЕРСАЛЬНЫЙ ТЕСТ ПРОПУСКНОЙ СПОСОБНОСТИ ПАМЯТИ
  */
 
 #include <cstdint>
@@ -10,31 +9,33 @@
 #include <vector>
 #include <thread>
 #include <atomic>
-#include <random>
 #include <iostream>
 #include <chrono>
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
 
+// Подключение специфичных для платформы заголовков для выровненного выделения памяти
 #if defined(_MSC_VER)
 #include <malloc.h>
 #elif defined(__MINGW32__) || defined(__MINGW64__)
 #include <mm_malloc.h>
 #endif
 
-namespace ram_test_internal
+namespace memory_test_internal
 {
-    // CONFIG: tweak these if needed
-    static constexpr size_t CONFIG_BUFFER_BYTES = 2ull * 1024 * 1024 * 1024; // 2 GiB to avoid cache effects
-    static constexpr size_t CONFIG_ALIGNMENT_BYTES = 64;
-    static constexpr bool CONFIG_VERBOSE = true;
-    static constexpr size_t CONFIG_WARMUP_ITERATIONS = 2;
-    static constexpr size_t CONFIG_TEST_ITERATIONS = 5;
+    // КОНФИГУРАЦИЯ
+    static constexpr size_t CONFIG_BUFFER_BYTES = 2ull * 1024 * 1024 * 1024; // Размер буфера
+    static constexpr size_t CONFIG_ALIGNMENT_BYTES = 64;                     // Выравнивание памяти
+    static constexpr bool CONFIG_VERBOSE = true;                             // Подробный вывод
+    static constexpr size_t CONFIG_WARMUP_ITERATIONS = 2;                    // Итерации разогрева
+    static constexpr size_t CONFIG_TEST_ITERATIONS = 5;                      // Итерации тестирования
 
+    // Псевдонимы для удобства работы со временем
     using high_res_clock = std::chrono::high_resolution_clock;
     using time_point_t = std::chrono::time_point<high_res_clock>;
 
+    // Барьер компилятора для предотвращения оптимизации
     inline void compiler_barrier()
     {
 #if defined(__GNUC__) || defined(__clang__)
@@ -44,6 +45,7 @@ namespace ram_test_internal
 #endif
     }
 
+    // Кросс-платформенное выделение выровненной памяти
     inline void *aligned_alloc_helper(size_t alignment, size_t size)
     {
 #if defined(_MSC_VER)
@@ -58,6 +60,7 @@ namespace ram_test_internal
 #endif
     }
 
+    // Освобождение выровненной памяти
     inline void aligned_free_helper(void *p)
     {
         if (!p)
@@ -71,13 +74,16 @@ namespace ram_test_internal
 #endif
     }
 
+    // Конвертация байтов в количество элементов
     inline size_t bytes_to_elements(size_t bytes) { return bytes / sizeof(uint64_t); }
 
+    // Вычисление разницы времени в секундах
     inline double seconds_between(const time_point_t &a, const time_point_t &b)
     {
         return std::chrono::duration<double>(b - a).count();
     }
 
+    // Форматирование байтов в читаемый вид
     inline std::string format_bytes(double bytes)
     {
         static const char *S[] = {"B", "KB", "MB", "GB", "TB"};
@@ -92,7 +98,7 @@ namespace ram_test_internal
         return oss.str();
     }
 
-    // Optimized memory access patterns
+    // Оптимизированная функция записи
     inline void stream_write(uint64_t *buffer, size_t elements, uint64_t value)
     {
         for (size_t i = 0; i < elements; i += 8)
@@ -108,6 +114,7 @@ namespace ram_test_internal
         }
     }
 
+    // Оптимизированная функция чтения
     inline uint64_t stream_read(const uint64_t *buffer, size_t elements)
     {
         uint64_t sum0 = 0, sum1 = 0, sum2 = 0, sum3 = 0;
@@ -127,38 +134,45 @@ namespace ram_test_internal
         return sum0 + sum1 + sum2 + sum3 + sum4 + sum5 + sum6 + sum7;
     }
 
-} // namespace ram_test_internal
+} // namespace memory_test_internal
 
+// Основная функция тестирования пропускной способности памяти
 inline void test_ram_speed()
 {
-    using namespace ram_test_internal;
+    using namespace memory_test_internal;
 
+    // Конфигурация теста
     const size_t buffer_bytes = CONFIG_BUFFER_BYTES;
     const size_t alignment = CONFIG_ALIGNMENT_BYTES;
     const size_t elements = bytes_to_elements(buffer_bytes);
 
+    // Проверка минимального размера буфера
     if (elements < 1024)
     {
-        std::cout << "ram_test: buffer too small\n";
+        std::cout << "memory_test: buffer too small\n";
         return;
     }
 
+    // Определение количества аппаратных потоков
     const unsigned hw_threads = std::thread::hardware_concurrency() ? std::thread::hardware_concurrency() : 1u;
     const unsigned mt_threads = std::max(1u, hw_threads);
 
+    // Вывод информации о конфигурации теста
     if (CONFIG_VERBOSE)
     {
-        std::cout << "=== IMPROVED MEMORY BANDWIDTH TEST ===\n";
-        std::cout << "Buffer: " << format_bytes(static_cast<double>(buffer_bytes))
-                  << " (" << elements << " uint64_t elements)\n";
-        std::cout << "Threads: " << mt_threads << "\n\n";
+        std::cout << "=== MEMORY BANDWIDTH TEST ===\n";
+        std::cout << "Buffer size: " << format_bytes(static_cast<double>(buffer_bytes))
+                  << " (" << elements << " elements)\n";
+        std::cout << "Threads: " << mt_threads << "\n";
+        std::cout << "Iterations: " << CONFIG_TEST_ITERATIONS << "\n\n";
     }
 
-    // Allocate memory
+    // Выделение выровненной памяти
     uint64_t *buffer = static_cast<uint64_t *>(aligned_alloc_helper(alignment, elements * sizeof(uint64_t)));
     std::vector<uint64_t> fallback;
     bool used_fallback = false;
 
+    // Резервное выделение через std::vector при неудаче
     if (!buffer)
     {
         try
@@ -167,16 +181,16 @@ inline void test_ram_speed()
             buffer = fallback.data();
             used_fallback = true;
             if (CONFIG_VERBOSE)
-                std::cout << "Using std::vector fallback\n";
+                std::cout << "Using std::vector fallback allocation\n";
         }
         catch (...)
         {
-            std::cerr << "Allocation failed\n";
+            std::cerr << "Memory allocation failed\n";
             return;
         }
     }
 
-    // Initialize memory
+    // Инициализация памяти
     if (CONFIG_VERBOSE)
         std::cout << "Initializing memory...\n";
     for (size_t i = 0; i < elements; ++i)
@@ -184,14 +198,14 @@ inline void test_ram_speed()
         buffer[i] = static_cast<uint64_t>(i);
     }
 
-    // Test variables
+    // Переменные для хранения лучших результатов
     double best_write = 0.0, best_read = 0.0;
     double best_mt_write = 0.0, best_mt_read = 0.0;
     volatile uint64_t checksum = 0;
 
-    // Single-threaded WRITE test
+    // Тест записи в однопоточном режиме
     if (CONFIG_VERBOSE)
-        std::cout << "\nSingle-threaded WRITE...\n";
+        std::cout << "\nSingle-threaded WRITE test...\n";
     for (size_t iter = 0; iter < CONFIG_WARMUP_ITERATIONS + CONFIG_TEST_ITERATIONS; ++iter)
     {
         auto t0 = high_res_clock::now();
@@ -208,9 +222,9 @@ inline void test_ram_speed()
         }
     }
 
-    // Single-threaded READ test
+    // Тест чтения в однопоточном режиме
     if (CONFIG_VERBOSE)
-        std::cout << "Single-threaded READ...\n";
+        std::cout << "Single-threaded READ test...\n";
     for (size_t iter = 0; iter < CONFIG_WARMUP_ITERATIONS + CONFIG_TEST_ITERATIONS; ++iter)
     {
         auto t0 = high_res_clock::now();
@@ -228,7 +242,7 @@ inline void test_ram_speed()
         }
     }
 
-    // Multi-threaded tests
+    // Лямбда-функция для многопоточного теста записи
     auto mt_writer = [&](size_t start, size_t end)
     {
         for (size_t i = start; i < end; i += 4)
@@ -243,6 +257,7 @@ inline void test_ram_speed()
         }
     };
 
+    // Лямбда-функция для многопоточного теста чтения
     auto mt_reader = [&](size_t start, size_t end, std::atomic<uint64_t> &result)
     {
         uint64_t sum = 0;
@@ -259,11 +274,12 @@ inline void test_ram_speed()
         result.fetch_add(sum, std::memory_order_relaxed);
     };
 
+    // Многопоточные тесты
     if (CONFIG_VERBOSE)
         std::cout << "\nMulti-threaded tests...\n";
     for (size_t attempt = 0; attempt < 3; ++attempt)
     {
-        // MT WRITE
+        // Многопоточная запись
         std::vector<std::thread> threads;
         size_t chunk = elements / mt_threads;
         auto t0 = high_res_clock::now();
@@ -280,7 +296,7 @@ inline void test_ram_speed()
         double mb_total = (double)elements * sizeof(uint64_t) / (1024.0 * 1024.0);
         best_mt_write = std::max(best_mt_write, mb_total / seconds_between(t0, t1));
 
-        // MT READ
+        // Многопоточное чтение
         threads.clear();
         std::atomic<uint64_t> mt_sum(0);
         t0 = high_res_clock::now();
@@ -298,7 +314,7 @@ inline void test_ram_speed()
         checksum ^= mt_sum.load(std::memory_order_relaxed);
     }
 
-    // Results
+    // Форматирование скорости для вывода
     auto print_speed = [](double mb_per_s)
     {
         double gb = mb_per_s / 1024.0;
@@ -307,27 +323,28 @@ inline void test_ram_speed()
         return oss.str();
     };
 
-    std::cout << "\n=== RESULTS ===\n";
+    // Вывод результатов
+    std::cout << "\n=== TEST RESULTS ===\n";
     std::cout << "Single-thread WRITE: " << print_speed(best_write) << '\n';
     std::cout << "Single-thread READ:  " << print_speed(best_read) << '\n';
     std::cout << "Multi-thread WRITE:  " << print_speed(best_mt_write) << '\n';
     std::cout << "Multi-thread READ:   " << print_speed(best_mt_read) << '\n';
-    std::cout << "Checksum: 0x" << std::hex << checksum << std::dec << '\n';
+    std::cout << "Verification checksum: 0x" << std::hex << checksum << std::dec << '\n';
 
-    // Check if results are reasonable
-    std::cout << "\n=== ASSESSMENT ===\n";
+    // Общий анализ результатов
+    std::cout << "\n=== PERFORMANCE ASSESSMENT ===\n";
     if (best_mt_read < 15000)
     {
-        std::cout << "WARNING: Performance seems low for DDR4 3200\n";
-        std::cout << "Expected: 20,000+ MB/s multi-threaded\n";
-        std::cout << "Check: XMP profile in BIOS, dual-channel mode\n";
+        std::cout << "Note: Memory bandwidth may be lower than expected\n";
+        std::cout << "Consider checking memory configuration\n";
     }
     else
     {
-        std::cout << "Performance looks reasonable\n";
+        std::cout << "Memory bandwidth is within expected range\n";
     }
 
+    // Освобождение памяти
     if (!used_fallback)
         aligned_free_helper(buffer);
-    std::cout << "=== END ===\n\n";
+    std::cout << "=== TEST COMPLETED ===\n\n";
 }

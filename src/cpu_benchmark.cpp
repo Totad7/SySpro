@@ -12,9 +12,11 @@
 #include <chrono>
 using namespace std;
 
-static atomic<bool> g_running(false);
-static CPUBenchmark *g_benchmark = nullptr;
+// Глобальные флаги для управления потоками
+static atomic<bool> g_running(false);       // Флаг выполнения теста
+static CPUBenchmark *g_benchmark = nullptr; // Указатель на текущий бенчмарк
 
+// Обертка для Windows потоков (совместимость с _beginthreadex)
 unsigned __stdcall thread_wrapper(void *param)
 {
     int thread_id = *(int *)param;
@@ -27,6 +29,7 @@ unsigned __stdcall thread_wrapper(void *param)
     return 0;
 }
 
+// Функция рабочего потока - выполняет вычисления
 void CPUBenchmark::worker_thread(int thread_id)
 {
     random_device rd;
@@ -36,24 +39,29 @@ void CPUBenchmark::worker_thread(int thread_id)
     long long operations = 0;
     double total_result = 0.0;
 
+    // Основной цикл вычислений
     while (g_running.load())
     {
+        // Пакет вычислений для минимизации блокировок
         for (int i = 0; i < 1000 && g_running.load(); i++)
         {
+            // Генерация случайных чисел
             double a = dist(gen);
             double b = dist(gen);
             double c = dist(gen);
             double d = dist(gen);
 
+            // Сложные математические операции (нагрузка на FPU)
             double result1 = sqrt(a) * sin(b) + cos(c) * tan(d);
             double result2 = log(a + 1.0) * exp(b) + pow(c, 1.5) * atan(d);
             double result3 = sinh(a) * cosh(b) + tanh(c) * log1p(d);
             double result4 = erf(a) * tgamma(b) + lgamma(c) * ceil(d);
 
             total_result += result1 + result2 + result3 + result4;
-            operations += 20;
+            operations += 20; // Считаем операции с плавающей точкой
         }
 
+        // Периодически обновляем счетчик операций
         if (operations > 0)
         {
             add_to_operations_counter(thread_id, operations);
@@ -61,6 +69,7 @@ void CPUBenchmark::worker_thread(int thread_id)
         }
     }
 
+    // Предотвращение оптимизации компилятором
     if (total_result < 0)
     {
         volatile double prevent_optimization = total_result;
@@ -68,43 +77,50 @@ void CPUBenchmark::worker_thread(int thread_id)
     }
 }
 
+// Конструктор - определяет количество потоков
 CPUBenchmark::CPUBenchmark() : running(false)
 {
+    // Определяем количество аппаратных потоков
     unsigned int num_threads = thread::hardware_concurrency();
     if (num_threads == 0)
-        num_threads = 4;
+        num_threads = 4; // Значение по умолчанию
 
+    // Инициализируем счетчики для каждого потока
     operations_counters = vector<long long>(num_threads, 0);
     performance_counters = vector<double>(num_threads, 0.0);
 }
 
+// Деструктор - останавливает тест
 CPUBenchmark::~CPUBenchmark()
 {
     stop_benchmark();
 }
 
+// Остановка бенчмарка
 void CPUBenchmark::stop_benchmark()
 {
     running.store(false);
     g_running.store(false);
 }
 
+// Основной метод запуска теста
 BenchmarkResult CPUBenchmark::run_benchmark(int duration_sec)
 {
     if (duration_sec <= 0)
-    {
         throw invalid_argument("Duration must be positive");
-    }
 
+    // Инициализация флагов и указателей
     running.store(true);
     g_running.store(true);
     g_benchmark = this;
 
+    // Сброс счетчиков
     fill(operations_counters.begin(), operations_counters.end(), 0);
     fill(performance_counters.begin(), performance_counters.end(), 0.0);
 
     unsigned int num_threads = operations_counters.size();
 
+    // Вывод информации о тесте
     cout << "\n"
          << string(50, '=') << "\n";
     cout << "STARTING CPU STRESS TEST\n";
@@ -113,6 +129,7 @@ BenchmarkResult CPUBenchmark::run_benchmark(int duration_sec)
     cout << "Duration: " << duration_sec << " seconds\n";
     cout << "Status: Loading CPU to maximum capacity...\n\n";
 
+    // Создание рабочих потоков
     vector<HANDLE> threads;
     for (unsigned int t = 0; t < num_threads; t++)
     {
@@ -129,16 +146,15 @@ BenchmarkResult CPUBenchmark::run_benchmark(int duration_sec)
     }
 
     if (threads.empty())
-    {
         throw runtime_error("Failed to create any worker threads");
-    }
 
+    // Измерение времени и вывод прогресса
     auto start_time = chrono::high_resolution_clock::now();
     auto last_update = start_time;
     int elapsed_seconds = 0;
-
     double current_gflops = 0.0;
 
+    // Основной цикл теста
     while (elapsed_seconds < duration_sec && running.load())
     {
         this_thread::sleep_for(chrono::milliseconds(100));
@@ -147,12 +163,13 @@ BenchmarkResult CPUBenchmark::run_benchmark(int duration_sec)
         auto total_elapsed = chrono::duration_cast<chrono::milliseconds>(now - start_time);
         elapsed_seconds = total_elapsed.count() / 1000;
 
+        // Обновление статистики раз в секунду
         auto time_since_update = chrono::duration_cast<chrono::milliseconds>(now - last_update);
         if (time_since_update.count() >= 1000)
         {
             last_update = now;
 
-            // Суммируем операции всех потоков
+            // Расчет общей производительности
             long long total_operations = 0;
             for (const auto &counter : operations_counters)
                 total_operations += counter;
@@ -168,8 +185,10 @@ BenchmarkResult CPUBenchmark::run_benchmark(int duration_sec)
         }
     }
 
+    // Завершение теста
     stop_benchmark();
 
+    // Ожидание завершения потоков
     for (HANDLE thread : threads)
     {
         if (thread)
@@ -179,6 +198,7 @@ BenchmarkResult CPUBenchmark::run_benchmark(int duration_sec)
         }
     }
 
+    // Расчет финальных результатов
     auto end_time = chrono::high_resolution_clock::now();
     auto total_duration = chrono::duration_cast<chrono::milliseconds>(end_time - start_time);
 
@@ -188,6 +208,7 @@ BenchmarkResult CPUBenchmark::run_benchmark(int duration_sec)
     double total_ops = 0.0;
     result.core_performance.resize(operations_counters.size());
 
+    // Расчет производительности по ядрам
     for (size_t i = 0; i < operations_counters.size(); i++)
     {
         double core_ops = operations_counters[i];
@@ -198,6 +219,7 @@ BenchmarkResult CPUBenchmark::run_benchmark(int duration_sec)
     result.total_operations = static_cast<long long>(total_ops);
     result.total_gflops = total_ops / (result.duration_seconds * 1e9);
 
+    // Определение мин/макс производительности ядер
     if (!result.core_performance.empty())
     {
         auto [min_it, max_it] = minmax_element(result.core_performance.begin(), result.core_performance.end());
@@ -216,6 +238,7 @@ BenchmarkResult CPUBenchmark::run_benchmark(int duration_sec)
     return result;
 }
 
+// Вывод детального отчета
 void CPUBenchmark::print_detailed_report(const BenchmarkResult &result)
 {
     cout << "\n"
@@ -231,6 +254,7 @@ void CPUBenchmark::print_detailed_report(const BenchmarkResult &result)
     cout << "Min Core Performance: " << result.min_single_core_gflops << " GFLOPS\n";
     cout << "Average Core Performance: " << result.average_gflops << " GFLOPS\n";
 
+    // Производительность по ядрам
     cout << "\nPerformance by Core:\n";
     for (size_t i = 0; i < result.core_performance.size(); ++i)
     {
@@ -238,6 +262,7 @@ void CPUBenchmark::print_detailed_report(const BenchmarkResult &result)
              << setw(8) << result.core_performance[i] << " GFLOPS\n";
     }
 
+    // Анализ результатов
     cout << "\nPerformance Analysis:\n";
     double performance_score = result.total_gflops;
 
@@ -252,6 +277,7 @@ void CPUBenchmark::print_detailed_report(const BenchmarkResult &result)
     else
         cout << "  Low performance. CPU may be throttling or overloaded.\n";
 
+    // Балансировка нагрузки
     if (result.max_single_core_gflops > 0)
     {
         double load_balance = (result.min_single_core_gflops / result.max_single_core_gflops) * 100.0;
