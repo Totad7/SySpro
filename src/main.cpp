@@ -55,9 +55,9 @@ void showHeader()
     setColor(14); // Желтый
     cout << "\n";
     cout << "    **************************************************\n";
-    cout << "    *                SySpro v1.8                     *\n";
-    cout << "    *            PC DIAGNOSTIC TOOL                  *\n";
-    cout << "    *       Comprehensive System Testing             *\n";
+    cout << "    *                  SySpro v1.8                   *\n";
+    cout << "    *              PC DIAGNOSTIC TOOL                *\n";
+    cout << "    *         Comprehensive System Testing           *\n";
     cout << "    **************************************************\n";
     setColor(7); // Белый
 }
@@ -183,7 +183,7 @@ void showMenu()
     cout << "    [9] Exit\n";
 
     setColor(9); // ...
-    cout << "    [i] Toggle OpenHardwareMonitor\n";
+    cout << "    [i] Opening OpenHardwareMonitor\n";
 
     setColor(15); // Ярко-белый
     cout << "    [?] Feedback & Links\n";
@@ -227,7 +227,7 @@ void openLinks()
     cout << "    ===== FEEDBACK & LINKS =====\n\n";
     setColor(7);
 
-    cout << "Clickable links (may not work in all terminals):\n\n";
+    cout << "Clickable links (not work in all terminals):\n\n";
 
     // Для поддержки VT последовательностей в Windows 10+
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -254,23 +254,13 @@ void openLinks()
     cout << "Alternatively, type:\n";
     cout << "  1 - Open GitHub\n";
     cout << "  2 - Open Telegram\n";
-    cout << "  3 - Back to menu\n";
-    cout << "  i - Toggle OpenHardwareMonitor\n\n";
+    cout << "  3 - Back to menu\n\n";
 
     cout << "Your choice: ";
 
     char input;
     cin >> input;
     cin.ignore(); // Очистка буфера
-
-    // Обработка ввода для клавиши 'i'
-    if (input == 'i' || input == 'I')
-    {
-        toggleOpenHardwareMonitor();
-        cout << "\nPress ENTER to continue...";
-        cin.get();
-        return;
-    }
 
     // Обработка цифрового ввода
     if (input >= '1' && input <= '3')
