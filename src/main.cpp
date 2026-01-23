@@ -62,18 +62,18 @@ void showHeader()
     setColor(7); // Белый
 }
 
-void toggleOpenHardwareMonitor()
+void toggleLibreHardwareMonitor()
 {
     clearScreen();
     showHeader();
 
     cout << "\n";
     setColor(11);
-    cout << "    ===== OPENHARDWAREMONITOR CONTROL =====\n\n";
-    cout << "\n!!  If OpenHardwareMonitor doesn't start, run the application as an administrator.  !!\n";
+    cout << "    ===== LibreHardwareMonitor CONTROL =====\n\n";
+    cout << "\n!!  If LibreHardwareMonitor doesn't start, run the application as an administrator.  !!\n";
     setColor(7);
 
-    // Проверяем, запущен ли OpenHardwareMonitor
+    // Проверяем, запущен ли LibreHardwareMonitor
     bool isRunning = false;
     DWORD processId = 0;
 
@@ -87,7 +87,7 @@ void toggleOpenHardwareMonitor()
         {
             do
             {
-                if (_stricmp(pe32.szExeFile, "OpenHardwareMonitor.exe") == 0)
+                if (_stricmp(pe32.szExeFile, "LibreHardwareMonitor.exe") == 0)
                 {
                     isRunning = true;
                     processId = pe32.th32ProcessID;
@@ -107,7 +107,7 @@ void toggleOpenHardwareMonitor()
             TerminateProcess(hProcess, 0);
             CloseHandle(hProcess);
             setColor(10);
-            cout << "  OpenHardwareMonitor terminated.\n";
+            cout << "  LibreHardwareMonitor terminated.\n";
             setColor(7);
         }
     }
@@ -118,12 +118,12 @@ void toggleOpenHardwareMonitor()
         PROCESS_INFORMATION pi;
 
         if (CreateProcessA(
-                "OpenHardwareMonitor.exe",
+                "LibreHardwareMonitor.exe",
                 NULL, NULL, NULL, FALSE, 0, NULL, NULL,
                 &si, &pi))
         {
             setColor(10);
-            cout << "  OpenHardwareMonitor started (PID: " << pi.dwProcessId << ")\n";
+            cout << "  LibreHardwareMonitor started (PID: " << pi.dwProcessId << ")\n";
             setColor(7);
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
@@ -132,9 +132,9 @@ void toggleOpenHardwareMonitor()
         {
             // Попробуем найти в других местах
             const char *paths[] = {
-                ".\\OpenHardwareMonitor\\OpenHardwareMonitor.exe",
-                "..\\OpenHardwareMonitor.exe",
-                "C:\\Program Files\\OpenHardwareMonitor\\OpenHardwareMonitor.exe",
+                ".\\LibreHardwareMonitor\\LibreHardwareMonitor.exe",
+                "..\\LibreHardwareMonitor.exe",
+                "C:\\Program Files\\LibreHardwareMonitor\\LibreHardwareMonitor.exe",
                 NULL};
 
             for (int i = 0; paths[i] != NULL; i++)
@@ -183,7 +183,7 @@ void showMenu()
     cout << "    [9] Exit\n";
 
     setColor(9); // ...
-    cout << "    [i] Opening OpenHardwareMonitor\n";
+    cout << "    [i] Opening LibreHardwareMonitor\n";
 
     setColor(15); // Ярко-белый
     cout << "    [?] Feedback & Links\n";
@@ -316,10 +316,10 @@ int main()
             continue;
         }
 
-        // Обработка клавиши 'i' для OpenHardwareMonitor
+        // Обработка клавиши 'i' для LibreHardwareMonitor
         if (choice == 'i' || choice == 'I')
         {
-            toggleOpenHardwareMonitor();
+            toggleLibreHardwareMonitor();
 
             cout << "\n\nPress ENTER to return to menu...";
             cin.ignore();
