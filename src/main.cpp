@@ -227,8 +227,6 @@ void openLinks()
     cout << "    ===== FEEDBACK & LINKS =====\n\n";
     setColor(7);
 
-    cout << "Clickable links (not work in all terminals):\n\n";
-
     // Для поддержки VT последовательностей в Windows 10+
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD dwMode = 0;
@@ -248,6 +246,11 @@ void openLinks()
     setColor(11);
     cout << "     [Telegram] https://t.me/Totad7";
     cout << "\033]8;;\033\\";
+    cout << "\n\n";
+
+    // пошта
+    setColor(12);
+    cout << "     [mail] tomtadey@mail.ru";
     cout << "\n\n";
 
     setColor(7);
